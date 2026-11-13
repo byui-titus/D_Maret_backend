@@ -46,8 +46,6 @@ function sortObjectDeep(value) {
 
 // Verify the NOWPayments IPN signature.
 function verifyNowPaymentsSignature(payload, receivedSignature, secret)  {
-  const secret = process.env.NOWPAYMENTS_IPN_SECRET;
-
   if (!secret || !receivedSignature) {
     return false;
   }
