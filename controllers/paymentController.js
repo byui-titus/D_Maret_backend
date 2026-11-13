@@ -210,6 +210,154 @@ async function handleNowPaymentsIPN(req, res) {
   }
 }
 
+
+async function createNowPaymentsInvoice(req, res) {
+  try {
+    const { orderNumber, customerEmail } = req.body;
+
+    const email = String(customerEmail || '').trim().toLowerCase();
+
+    if (!orderNumber || !email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order reference and customer email are required.',
+      });
+    }
+
+    const apiKey = process.env.NOWPAYMENTS_API_KEY;
+    const callbackUrl =
+      'https://d-maret-backend.onrender.com/api/payments/nowpayments/ipn';
+
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway is not configured.',
+      });
+    }
+
+    const db = getDB();
+
+    const orders = db.collection('orders');
+
+    const order = await orders.findOne({
+      orderNumber: String(orderNumber).trim(),
+      'customer.email': email,
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found.',
+      });
+    }
+
+    if (
+      order.paymentStatus !== 'pending' ||
+      order.orderStatus !== 'awaiting_payment'
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'This order is not awaiting payment.',
+      });
+    }
+
+    // Reuse an existing invoice rather than creating duplicates.
+    if (
+      order.payment?.provider === 'nowpayments' &&
+      order.payment?.invoiceUrl
+    ) {
+      return res.status(200).json({
+        success: true,
+        invoiceUrl: order.payment.invoiceUrl,
+        invoiceId: order.payment.invoiceId,
+        message: 'Existing payment invoice retrieved.',
+      });
+    }
+
+    const invoiceResponse = await fetch(
+      'https://api.nowpayments.io/v1/invoice',
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          price_amount: Number(order.totalAmount),
+          price_currency: 'usd',
+          order_id: order.orderNumber,
+          order_description: `DigitalMarket order ${order.orderNumber}: ${order.product.name}`,
+          ipn_callback_url: callbackUrl,
+        }),
+      }
+    );
+
+    const invoiceData = await invoiceResponse.json();
+
+    if (
+      !invoiceResponse.ok ||
+      !invoiceData.id ||
+      !invoiceData.invoice_url
+    ) {
+      console.error('NOWPayments invoice error:', invoiceData);
+
+      return res.status(502).json({
+        success: false,
+        message: 'Unable to create a payment invoice. Please try again.',
+      });
+    }
+
+    await orders.updateOne(
+      {
+        _id: order._id,
+        paymentStatus: 'pending',
+        'payment.invoiceId': { $exists: false },
+      },
+      {
+        $set: {
+          payment: {
+            provider: 'nowpayments',
+            invoiceId: String(invoiceData.id),
+            invoiceUrl: invoiceData.invoice_url,
+            gatewayPaymentStatus: 'waiting',
+            createdAt: new Date(),
+          },
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    const savedOrder = await orders.findOne({ _id: order._id });
+
+    if (
+      !savedOrder.payment ||
+      String(savedOrder.payment.invoiceId) !== String(invoiceData.id)
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: 'A payment invoice may already exist for this order. Please retry.',
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      invoiceId: String(invoiceData.id),
+      invoiceUrl: invoiceData.invoice_url,
+      message: 'Payment invoice created successfully.',
+    });
+
+  } catch (error) {
+    console.error('Create NOWPayments invoice error:', error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to create payment invoice.',
+    });
+  }
+}
+
 module.exports = {
   handleNowPaymentsIPN,
+  createNowPaymentsInvoice,
 };
+

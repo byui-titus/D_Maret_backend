@@ -4,8 +4,13 @@ const router = express.Router();
 
 const paymentController = require('../controllers/paymentController');
 
-// Public callback used by NOWPayments.
-// Do not add administrator authentication to this route.
+// Customer requests a hosted payment invoice.
+router.post(
+  '/nowpayments/invoice',
+  paymentController.createNowPaymentsInvoice
+);
+
+// NOWPayments sends payment notifications.
 router.post(
   '/nowpayments/ipn',
   paymentController.handleNowPaymentsIPN
