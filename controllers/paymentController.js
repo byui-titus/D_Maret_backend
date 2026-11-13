@@ -314,8 +314,14 @@ async function createNowPaymentsInvoice(req, res) {
 
     const config = getNowPaymentsConfig();
      const apiKey = config.apiKey;
-    const callbackUrl =
-      'https://d-maret-backend.onrender.com/api/payments/nowpayments/ipn';
+    const callbackUrl = process.env.NOWPAYMENTS_IPN_CALLBACK_URL;
+
+    if (!callbackUrl) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment notification URL is not configured.',
+      });
+    }
 
     if (!apiKey) {
       return res.status(500).json({
