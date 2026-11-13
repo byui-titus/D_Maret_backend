@@ -50,12 +50,13 @@ function verifyNowPaymentsSignature(payload, receivedSignature) {
 }
 
 // POST /api/payments/nowpayments/ipn
+
 async function handleNowPaymentsIPN(req, res) {
   try {
     const signature = req.headers['x-nowpayments-sig'];
     const payload = req.body;
 
-    if (!payload || typeof payload !== 'object') {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid notification payload.',
@@ -93,9 +94,9 @@ async function handleNowPaymentsIPN(req, res) {
 
     if (
       !order_id ||
-      !payment_status ||
       !payment_id ||
-      !price_amount ||
+      !payment_status ||
+      price_amount === undefined ||
       !price_currency
     ) {
       return res.status(400).json({
@@ -104,9 +105,29 @@ async function handleNowPaymentsIPN(req, res) {
       });
     }
 
-    const db = getDB();
+    const allowedStatuses = [
+      'waiting',
+      'confirming',
+      'confirmed',
+      'sending',
+      'partially_paid',
+      'finished',
+      'failed',
+      'expired',
+      'refunded',
+    ];
 
-    const order = await db.collection('orders').findOne({
+    if (!allowedStatuses.includes(payment_status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unknown payment status.',
+      });
+    }
+
+    const db = getDB();
+    const orders = db.collection('orders');
+
+    const order = await orders.findOne({
       orderNumber: String(order_id),
     });
 
@@ -117,30 +138,44 @@ async function handleNowPaymentsIPN(req, res) {
       });
     }
 
-    // Ensure this notification belongs to an invoice
-    // created for this order through NOWPayments.
     const savedPayment = order.payment || {};
 
-    const matchingInvoice =
-      invoice_id &&
-      savedPayment.invoiceId &&
-      String(invoice_id) === String(savedPayment.invoiceId);
-
-    const matchingPayment =
-      savedPayment.paymentId &&
-      String(payment_id) === String(savedPayment.paymentId);
-
+    // The order must have an invoice created by our backend.
     if (
       savedPayment.provider !== 'nowpayments' ||
-      (!matchingInvoice && !matchingPayment)
+      !savedPayment.invoiceId
     ) {
       return res.status(400).json({
         success: false,
-        message: 'Payment does not match this order.',
+        message: 'No matching payment invoice exists for this order.',
       });
     }
 
-    // Confirm that the fiat order amount and currency match.
+    // If NOWPayments includes invoice_id, verify it.
+    // Some payment notifications may identify the order
+    // through order_id without including invoice_id.
+    if (
+      invoice_id &&
+      String(invoice_id) !== String(savedPayment.invoiceId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invoice reference does not match this order.',
+      });
+    }
+
+    // Do not allow a different payment ID to replace
+    // the payment already associated with this order.
+    if (
+      savedPayment.paymentId &&
+      String(savedPayment.paymentId) !== String(payment_id)
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: 'A different payment is already associated with this order.',
+      });
+    }
+
     const expectedAmount = Math.round(
       Number(order.totalAmount) * 100
     );
@@ -161,6 +196,17 @@ async function handleNowPaymentsIPN(req, res) {
       });
     }
 
+    // Do not let an older notification downgrade a completed payment.
+    if (
+      order.paymentStatus === 'confirmed' &&
+      payment_status !== 'refunded'
+    ) {
+      return res.status(200).json({
+        success: true,
+        message: 'Order payment is already confirmed.',
+      });
+    }
+
     const updates = {
       'payment.gatewayPaymentStatus': payment_status,
       'payment.paymentId': String(payment_id),
@@ -170,8 +216,6 @@ async function handleNowPaymentsIPN(req, res) {
       updatedAt: new Date(),
     };
 
-    // Only mark an order paid when NOWPayments reports
-    // that the payment is finished.
     if (payment_status === 'finished') {
       updates.paymentStatus = 'confirmed';
 
@@ -186,10 +230,29 @@ async function handleNowPaymentsIPN(req, res) {
       updates.paymentStatus = 'refunded';
     }
 
-    await db.collection('orders').updateOne(
-      { _id: order._id },
-      { $set: updates }
+    // Atomically associate the first payment ID with this order.
+    const updateResult = await orders.updateOne(
+      {
+        _id: order._id,
+        'payment.provider': 'nowpayments',
+        'payment.invoiceId': savedPayment.invoiceId,
+        $or: [
+          { 'payment.paymentId': { $exists: false } },
+          { 'payment.paymentId': null },
+          { 'payment.paymentId': String(payment_id) },
+        ],
+      },
+      {
+        $set: updates,
+      }
     );
+
+    if (updateResult.matchedCount === 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Payment could not be matched safely to this order.',
+      });
+    }
 
     console.log(
       `NOWPayments notification processed for ${order.orderNumber}: ${payment_status}`
@@ -209,6 +272,7 @@ async function handleNowPaymentsIPN(req, res) {
     });
   }
 }
+
 
 
 async function createNowPaymentsInvoice(req, res) {
