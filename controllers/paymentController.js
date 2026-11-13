@@ -164,6 +164,15 @@ if (!config.ipnSecret) {
 
     const savedPayment = order.payment || {};
 
+    if (
+        (savedPayment.environment || 'live') !== config.mode
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Payment environment does not match this order.',
+        });
+      }
+
     // The order must have an invoice created by our backend.
     if (
       savedPayment.provider !== 'nowpayments' ||
