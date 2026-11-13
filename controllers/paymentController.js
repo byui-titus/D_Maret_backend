@@ -10,7 +10,8 @@ function getNowPaymentsConfig() {
       mode: 'sandbox',
       apiKey: process.env.NOWPAYMENTS_SANDBOX_API_KEY,
       ipnSecret: process.env.NOWPAYMENTS_SANDBOX_IPN_SECRET,
-      baseUrl: 'https://api.sandbox.nowpayments.io/v1',
+      baseUrl: 'https://api-sandbox.nowpayments.io/v1',
+  
     };
   }
 
