@@ -2,6 +2,30 @@
 const crypto = require('crypto');
 const { getDB } = require('../config/database');
 
+function getNowPaymentsConfig() {
+  const mode = (process.env.NOWPAYMENTS_MODE || 'live').toLowerCase();
+
+  if (mode === 'sandbox') {
+    return {
+      mode: 'sandbox',
+      apiKey: process.env.NOWPAYMENTS_SANDBOX_API_KEY,
+      ipnSecret: process.env.NOWPAYMENTS_SANDBOX_IPN_SECRET,
+      baseUrl: 'https://api.sandbox.nowpayments.io/v1',
+    };
+  }
+
+  if (mode === 'live') {
+    return {
+      mode: 'live',
+      apiKey: process.env.NOWPAYMENTS_API_KEY,
+      ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET,
+      baseUrl: 'https://api.nowpayments.io/v1',
+    };
+  }
+
+  throw new Error('Invalid NOWPAYMENTS_MODE. Use live or sandbox.');
+}
+
 // Sort object keys recursively as required by NOWPayments.
 function sortObjectDeep(value) {
   if (Array.isArray(value)) {
@@ -21,7 +45,7 @@ function sortObjectDeep(value) {
 }
 
 // Verify the NOWPayments IPN signature.
-function verifyNowPaymentsSignature(payload, receivedSignature) {
+function verifyNowPaymentsSignature(payload, receivedSignature, secret)  {
   const secret = process.env.NOWPAYMENTS_IPN_SECRET;
 
   if (!secret || !receivedSignature) {
@@ -63,7 +87,9 @@ async function handleNowPaymentsIPN(req, res) {
       });
     }
 
-    if (!process.env.NOWPAYMENTS_IPN_SECRET) {
+    const config = getNowPaymentsConfig();
+
+if (!config.ipnSecret) {
       console.error('NOWPayments IPN secret is not configured.');
 
       return res.status(500).json({
@@ -72,7 +98,7 @@ async function handleNowPaymentsIPN(req, res) {
       });
     }
 
-    if (!verifyNowPaymentsSignature(payload, signature)) {
+    if (!verifyNowPaymentsSignature(payload, signature, config.ipnSecret)) {
       console.error('NOWPayments IPN signature verification failed.');
 
       return res.status(401).json({
@@ -288,7 +314,8 @@ async function createNowPaymentsInvoice(req, res) {
       });
     }
 
-    const apiKey = process.env.NOWPAYMENTS_API_KEY;
+    const config = getNowPaymentsConfig();
+     const apiKey = config.apiKey;
     const callbackUrl =
       'https://d-maret-backend.onrender.com/api/payments/nowpayments/ipn';
 
@@ -327,19 +354,20 @@ async function createNowPaymentsInvoice(req, res) {
 
     // Reuse an existing invoice rather than creating duplicates.
     if (
-      order.payment?.provider === 'nowpayments' &&
-      order.payment?.invoiceUrl
-    ) {
-      return res.status(200).json({
-        success: true,
-        invoiceUrl: order.payment.invoiceUrl,
-        invoiceId: order.payment.invoiceId,
-        message: 'Existing payment invoice retrieved.',
-      });
-    }
+  order.payment?.provider === 'nowpayments' &&
+  order.payment?.invoiceUrl &&
+  (order.payment.environment || 'live') === config.mode
+) {
+  return res.status(200).json({
+    success: true,
+    invoiceUrl: order.payment.invoiceUrl,
+    invoiceId: order.payment.invoiceId,
+    message: 'Existing payment invoice retrieved.',
+  });
+}
 
     const invoiceResponse = await fetch(
-      'https://api.nowpayments.io/v1/invoice',
+     `${config.baseUrl}/invoice`,
       {
         method: 'POST',
         headers: {
@@ -381,6 +409,7 @@ async function createNowPaymentsInvoice(req, res) {
         $set: {
           payment: {
             provider: 'nowpayments',
+            environment: config.mode,
             invoiceId: String(invoiceData.id),
             invoiceUrl: invoiceData.invoice_url,
             gatewayPaymentStatus: 'waiting',
