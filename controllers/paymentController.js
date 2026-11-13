@@ -453,13 +453,18 @@ async function createNowPaymentsInvoice(req, res) {
     });
 
   } catch (error) {
-    console.error('Create NOWPayments invoice error:', error.message);
+  console.error('Create NOWPayments invoice error:', {
+    message: error.message,
+    cause: error.cause?.message,
+    code: error.cause?.code,
+    stack: error.stack,
+  });
 
-    return res.status(500).json({
-      success: false,
-      message: 'Unable to create payment invoice.',
-    });
-  }
+  return res.status(500).json({
+    success: false,
+    message: 'Unable to create payment invoice.',
+  });
+}
 }
 
 module.exports = {
